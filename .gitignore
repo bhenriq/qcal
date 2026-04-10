@@ -1,0 +1,5 @@
+# Binary
+qcal
+
+# Config contains secrets (client_id, client_secret, refresh_token)
+config.json
