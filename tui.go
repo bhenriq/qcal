@@ -396,7 +396,7 @@ func (m model) renderDetail(width, maxHeight int) string {
 		}
 	}
 
-	content := "  " + strings.Join(sections, "\n\n  ")
+	content := strings.Join(sections, "\n\n")
 
 	// Split into lines, apply scroll, truncate
 	lines := strings.Split(content, "\n")
@@ -410,6 +410,12 @@ func (m model) renderDetail(width, maxHeight int) string {
 	}
 	if len(lines) > maxHeight {
 		lines = lines[:maxHeight]
+	}
+
+	// Add consistent left padding
+	pad := "   "
+	for i, l := range lines {
+		lines[i] = pad + l
 	}
 
 	return strings.Join(lines, "\n")
