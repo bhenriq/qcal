@@ -72,24 +72,29 @@ var (
 	unfocusedBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, true, false, false).
 				BorderForeground(lipgloss.Color("240"))
+
+	conflictStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("208"))
 )
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
 
 type model struct {
-	meetings   []Meeting
-	cursor     int
-	focus      int // focusList or focusDetail
-	listScroll int // scroll offset for list pane
-	detScroll  int // scroll offset for detail pane
-	width      int
-	height     int
+	meetings     []Meeting
+	sourceColors SourceColorMap
+	cursor       int
+	focus        int // focusList or focusDetail
+	listScroll   int // scroll offset for list pane
+	detScroll    int // scroll offset for detail pane
+	width        int
+	height       int
 }
 
-func newModel(meetings []Meeting) model {
+func newModel(meetings []Meeting, colors SourceColorMap) model {
 	return model{
-		meetings: meetings,
-		focus:    focusList,
+		meetings:     meetings,
+		sourceColors: colors,
+		focus:        focusList,
 	}
 }
 
@@ -113,7 +118,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor--
 					m.detScroll = 0
 				}
-				// Adjust list scroll to keep cursor visible
 				if m.cursor < m.listScroll {
 					m.listScroll = m.cursor
 				}
@@ -128,13 +132,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor++
 					m.detScroll = 0
 				}
-				// Adjust list scroll to keep cursor visible
 				visibleLines := m.contentHeight()
 				if m.cursor >= m.listScroll+visibleLines {
 					m.listScroll = m.cursor - visibleLines + 1
 				}
 			} else {
-				m.detScroll++
+				maxScroll := m.detailMaxScroll()
+				if m.detScroll < maxScroll {
+					m.detScroll++
+				}
 			}
 		case "g":
 			if m.focus == focusList {
@@ -153,7 +159,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.listScroll = m.cursor - visibleLines + 1
 				}
 			}
-			// Don't handle G for detail — no max known here
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -164,6 +169,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) contentHeight() int {
 	return m.height - 4
+}
+
+// detailMaxScroll computes the max scroll for the current meeting's detail pane.
+// Uses the same buildDetailContent as renderDetail so line counts are always accurate.
+func (m model) detailMaxScroll() int {
+	if len(m.meetings) == 0 || m.width == 0 {
+		return 0
+	}
+
+	content := m.buildDetailContent(m.detailWrapWidth())
+	totalLines := strings.Count(content, "\n") + 1
+
+	maxScroll := totalLines - m.contentHeight()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	return maxScroll
 }
 
 func (m model) View() string {
@@ -178,7 +200,6 @@ func (m model) View() string {
 	list := m.renderList(listWidth, contentH)
 	detail := m.renderDetail(detailWidth, contentH)
 
-	// Apply border style based on focus
 	var listBorder lipgloss.Style
 	if m.focus == focusList {
 		listBorder = focusedBorderStyle
@@ -198,7 +219,6 @@ func (m model) View() string {
 
 	main := lipgloss.JoinHorizontal(lipgloss.Top, listPane, detailPane)
 
-	// Help bar
 	var focusHint string
 	if m.focus == focusList {
 		focusHint = "list"
@@ -212,14 +232,22 @@ func (m model) View() string {
 	return main + "\n" + help
 }
 
+func (m model) sourceStyle(sourceName string) lipgloss.Style {
+	color := "245" // fallback gray
+	if c, ok := m.sourceColors[sourceName]; ok {
+		color = c
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+}
+
 func (m model) renderList(width, maxHeight int) string {
 	if len(m.meetings) == 0 {
 		return dimStyle.Render("No meetings found.")
 	}
 
 	now := time.Now()
+	multiSource := len(m.sourceColors) > 1
 
-	// Build all lines first
 	type listLine struct {
 		text     string
 		isHeader bool
@@ -276,13 +304,28 @@ func (m model) renderList(width, maxHeight int) string {
 			timeStr = startTime.Format("15:04")
 		}
 
-		maxSummaryW := width - 14
+		// Conflict warning (always reserve 2 chars for alignment)
+		conflictWarn := "  "
+		if len(mtg.Conflicts) > 0 {
+			conflictWarn = conflictStyle.Render("⚠") + " "
+		}
+
+		// Source color dot (only shown when there are multiple sources)
+		sourceDot := ""
+		if multiSource {
+			sourceDot = m.sourceStyle(mtg.Source).Render("●") + " "
+		}
+
+		maxSummaryW := width - 16 // always account for conflict column
+		if multiSource {
+			maxSummaryW -= 2 // account for dot
+		}
 		summary := mtg.Summary
 		if maxSummaryW > 0 && len(summary) > maxSummaryW {
 			summary = summary[:maxSummaryW-1] + "…"
 		}
 
-		line := fmt.Sprintf(" %s %-7s %s", indicator, timeStr, summary)
+		line := fmt.Sprintf(" %s %-7s %s%s%s", indicator, timeStr, conflictWarn, sourceDot, summary)
 
 		if meetingIdx == m.cursor {
 			line = selectedStyle.Width(width - 2).Render(line)
@@ -293,7 +336,6 @@ func (m model) renderList(width, maxHeight int) string {
 		allLines = append(allLines, listLine{text: line, isHeader: false})
 	}
 
-	// Apply scroll and truncate to maxHeight
 	start := m.listScroll
 	if start > len(allLines) {
 		start = len(allLines)
@@ -310,22 +352,20 @@ func (m model) renderList(width, maxHeight int) string {
 	return b.String()
 }
 
-func (m model) renderDetail(width, maxHeight int) string {
-	if len(m.meetings) == 0 {
-		return ""
-	}
-
+// buildDetailContent builds the full styled detail pane content for the current meeting.
+func (m model) buildDetailContent(wrapWidth int) string {
 	mtg := m.meetings[m.cursor]
 	now := time.Now()
-	wrapWidth := width - 6
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
 
 	var sections []string
 
-	// Title
-	sections = append(sections, titleStyle.Render(wrapText(mtg.Summary, wrapWidth)))
+	// Title with source label
+	titleLine := titleStyle.Render(wrapText(mtg.Summary, wrapWidth))
+	if mtg.Source != "" && len(m.sourceColors) > 1 {
+		srcLabel := m.sourceStyle(mtg.Source).Render("[" + mtg.Source + "]")
+		titleLine = titleLine + "  " + srcLabel
+	}
+	sections = append(sections, titleLine)
 
 	// Time
 	startTime, err := time.Parse(time.RFC3339, mtg.Start)
@@ -363,6 +403,23 @@ func (m model) renderDetail(width, maxHeight int) string {
 		sections = append(sections, statusLine)
 	}
 
+	// Conflicts
+	if len(mtg.Conflicts) > 0 {
+		var conflictLines []string
+		conflictLines = append(conflictLines, conflictStyle.Render(fmt.Sprintf("⚠ Overlaps with %d event(s):", len(mtg.Conflicts))))
+		for _, c := range mtg.Conflicts {
+			cStart, _ := time.Parse(time.RFC3339, c.Start)
+			cEnd, _ := time.Parse(time.RFC3339, c.End)
+			timeRange := fmt.Sprintf("%s - %s", cStart.Format("3:04 PM"), cEnd.Format("3:04 PM"))
+			label := fmt.Sprintf("  %s  %s", timeRange, c.Summary)
+			if len(m.sourceColors) > 1 && c.Source != "" {
+				label += dimStyle.Render("  [" + c.Source + "]")
+			}
+			conflictLines = append(conflictLines, conflictStyle.Render(wrapText(label, wrapWidth)))
+		}
+		sections = append(sections, strings.Join(conflictLines, "\n"))
+	}
+
 	// Location
 	if mtg.Location != "" {
 		sections = append(sections, sectionStyle.Render("Location")+"\n"+wrapText(mtg.Location, wrapWidth))
@@ -396,23 +453,47 @@ func (m model) renderDetail(width, maxHeight int) string {
 		}
 	}
 
-	content := strings.Join(sections, "\n\n")
+	return strings.Join(sections, "\n\n")
+}
 
-	// Split into lines, apply scroll, truncate
+func (m model) detailWrapWidth() int {
+	detailWidth := m.width - (m.width*2/5 - 1) - 3
+	w := detailWidth - 6
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
+func (m model) renderDetail(width, maxHeight int) string {
+	if len(m.meetings) == 0 {
+		return ""
+	}
+
+	wrapWidth := width - 6
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+
+	content := m.buildDetailContent(wrapWidth)
 	lines := strings.Split(content, "\n")
 
-	// Clamp scroll
-	if m.detScroll > len(lines)-1 {
-		// handled in Update but be safe
+	// Apply scroll with clamping
+	offset := m.detScroll
+	maxScroll := len(lines) - maxHeight
+	if maxScroll < 0 {
+		maxScroll = 0
 	}
-	if m.detScroll > 0 && m.detScroll < len(lines) {
-		lines = lines[m.detScroll:]
+	if offset > maxScroll {
+		offset = maxScroll
+	}
+	if offset > 0 {
+		lines = lines[offset:]
 	}
 	if len(lines) > maxHeight {
 		lines = lines[:maxHeight]
 	}
 
-	// Add consistent left padding
 	pad := "   "
 	for i, l := range lines {
 		lines[i] = pad + l
@@ -481,11 +562,8 @@ func renderAttendees(attendees []MeetingAttendee, wrapWidth int) string {
 
 // stripHTML removes HTML tags and decodes common entities.
 func stripHTML(s string) string {
-	// Replace <br> variants with newlines
 	s = regexp.MustCompile(`<br\s*/?>|</p>|</div>|</li>`).ReplaceAllString(s, "\n")
-	// Strip remaining tags
 	s = htmlTagRe.ReplaceAllString(s, "")
-	// Decode common HTML entities
 	r := strings.NewReplacer(
 		"&amp;", "&",
 		"&lt;", "<",
@@ -495,7 +573,6 @@ func stripHTML(s string) string {
 		"&nbsp;", " ",
 	)
 	s = r.Replace(s)
-	// Collapse multiple blank lines
 	s = regexp.MustCompile(`\n{3,}`).ReplaceAllString(s, "\n\n")
 	return s
 }
@@ -519,7 +596,6 @@ func wrapText(s string, maxWidth int) string {
 			if cut > len(inputLine) {
 				cut = len(inputLine)
 			}
-			// Try to break at a space
 			if cut < len(inputLine) {
 				if idx := strings.LastIndex(inputLine[:cut], " "); idx > maxWidth/3 {
 					cut = idx + 1
@@ -547,9 +623,9 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm", m)
 }
 
-func runTUI(meetings []Meeting) error {
+func runTUI(meetings []Meeting, colors SourceColorMap) error {
 	p := tea.NewProgram(
-		newModel(meetings),
+		newModel(meetings, colors),
 		tea.WithAltScreen(),
 	)
 	_, err := p.Run()
