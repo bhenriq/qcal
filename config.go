@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type SourceConfig struct {
@@ -27,20 +28,27 @@ type Config struct {
 }
 
 func loadConfig() (*Config, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	configPath := filepath.Join(filepath.Dir(exe), "config.json")
-
-	// Fall back to current directory if not found next to binary
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		configPath = "config.json"
+	configDir := os.Getenv("XDG_CONFIG_HOME")
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		configDir = filepath.Join(home, ".config")
 	}
 
-	data, err := os.ReadFile(configPath)
+	xdgPath := filepath.Join(configDir, "qcal", "config.json")
+	cwdPath := "config.json"
+
+	pathsTried := []string{xdgPath}
+
+	data, err := os.ReadFile(xdgPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
+		data, err = os.ReadFile(cwdPath)
+		pathsTried = append(pathsTried, cwdPath)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("config.json not found\n  (tried: %s)", strings.Join(pathsTried, ", "))
 	}
 
 	var cfg Config

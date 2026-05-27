@@ -1,0 +1,21 @@
+{
+  "sources": [
+    {
+      "name": "work",
+      "type": "google",
+      "color": "63",
+      "client_id": "YOUR_CLIENT_ID",
+      "client_secret": "YOUR_CLIENT_SECRET",
+      "refresh_token": "YOUR_REFRESH_TOKEN",
+      "token_uri": "https://oauth2.googleapis.com/token"
+    },
+    {
+      "name": "personal",
+      "type": "caldav",
+      "color": "170",
+      "url": "https://caldav.fastmail.com/",
+      "username": "YOUR_USERNAME",
+      "password": "YOUR_APP_PASSWORD"
+    }
+  ]
+}
