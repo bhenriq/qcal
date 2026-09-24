@@ -21,6 +21,14 @@ type SourceConfig struct {
 	URL      string `json:"url,omitempty"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
+	// Calendars maps a CalDAV calendar's display name to a color override.
+	// Calendars not listed are auto-assigned a palette color.
+	Calendars map[string]string `json:"calendars,omitempty"`
+	// PassCmd is an optional shell command whose stdout is used as the
+	// secret (CalDAV password, or Google refresh token) when the
+	// corresponding literal field is empty. Useful for pulling the secret
+	// from a keychain or password manager.
+	PassCmd string `json:"passcmd,omitempty"`
 }
 
 type Config struct {

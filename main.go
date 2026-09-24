@@ -48,6 +48,7 @@ func main() {
 	}
 
 	colors := BuildSourceColors(cfg.Sources)
+	ensureMeetingColors(meetings, colors)
 
 	if *tui {
 		if err := runTUI(meetings, colors); err != nil {

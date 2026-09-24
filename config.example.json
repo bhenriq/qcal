@@ -14,8 +14,8 @@
       "type": "caldav",
       "color": "170",
       "url": "https://caldav.fastmail.com/",
-      "username": "YOUR_USERNAME",
-      "password": "YOUR_APP_PASSWORD"
+      "username": "you@fastmail.com",
+      "passcmd": "security find-generic-password -a you@fastmail.com -s qcal-fastmail -w"
     }
   ]
 }

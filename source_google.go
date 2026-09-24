@@ -62,6 +62,7 @@ type GoogleSource struct {
 	clientSecret string
 	refreshToken string
 	tokenURI     string
+	passCmd      string
 }
 
 func NewGoogleSource(cfg SourceConfig) *GoogleSource {
@@ -71,12 +72,21 @@ func NewGoogleSource(cfg SourceConfig) *GoogleSource {
 		clientSecret: cfg.ClientSecret,
 		refreshToken: cfg.RefreshToken,
 		tokenURI:     cfg.TokenURI,
+		passCmd:      cfg.PassCmd,
 	}
 }
 
 func (g *GoogleSource) Name() string { return g.name }
 
 func (g *GoogleSource) FetchEvents(days int) ([]Meeting, error) {
+	if g.refreshToken == "" && g.passCmd != "" {
+		rt, err := runPassCmd(g.passCmd)
+		if err != nil {
+			return nil, err
+		}
+		g.refreshToken = rt
+	}
+
 	accessToken, err := g.getAccessToken()
 	if err != nil {
 		return nil, err

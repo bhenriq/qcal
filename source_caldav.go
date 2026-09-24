@@ -25,6 +25,9 @@ type CalDAVSource struct {
 	url      string
 	username string
 	password string
+	passCmd  string
+	// calLabel is the display name of the calendar currently being parsed.
+	calLabel string
 }
 
 func NewCalDAVSource(cfg SourceConfig) *CalDAVSource {
@@ -33,6 +36,7 @@ func NewCalDAVSource(cfg SourceConfig) *CalDAVSource {
 		url:      cfg.URL,
 		username: cfg.Username,
 		password: cfg.Password,
+		passCmd:  cfg.PassCmd,
 	}
 }
 
@@ -41,7 +45,16 @@ func (c *CalDAVSource) Name() string { return c.name }
 func (c *CalDAVSource) FetchEvents(days int) ([]Meeting, error) {
 	ctx := context.Background()
 
-	httpClient := webdav.HTTPClientWithBasicAuth(http.DefaultClient, c.username, c.password)
+	password := c.password
+	if password == "" && c.passCmd != "" {
+		pw, err := runPassCmd(c.passCmd)
+		if err != nil {
+			return nil, err
+		}
+		password = pw
+	}
+
+	httpClient := webdav.HTTPClientWithBasicAuth(http.DefaultClient, c.username, password)
 
 	// Try .well-known discovery to find the real CalDAV endpoint
 	endpoint := c.url
@@ -88,6 +101,8 @@ func (c *CalDAVSource) FetchEvents(days int) ([]Meeting, error) {
 		if !supportsEvents(cal) {
 			continue
 		}
+
+		c.calLabel = calendarLabel(cal, c.name)
 
 		query := &caldav.CalendarQuery{
 			CompRequest: caldav.CalendarCompRequest{
@@ -137,14 +152,49 @@ func supportsEvents(cal caldav.Calendar) bool {
 	return false
 }
 
+// sourceLabel returns the label to attach to meetings: the current calendar's
+// display name if known, otherwise the configured source name.
+func (c *CalDAVSource) sourceLabel() string {
+	if c.calLabel != "" {
+		return c.calLabel
+	}
+	return c.name
+}
+
+// calendarLabel derives a human-readable label for a calendar, falling back to
+// the last path segment and then to the configured source name.
+func calendarLabel(cal caldav.Calendar, fallback string) string {
+	if cal.Name != "" {
+		return cal.Name
+	}
+	path := strings.TrimRight(cal.Path, "/")
+	if i := strings.LastIndex(path, "/"); i >= 0 && i+1 < len(path) {
+		return path[i+1:]
+	}
+	return fallback
+}
+
 func (c *CalDAVSource) parseCalendarObject(obj caldav.CalendarObject, queryStart, queryEnd time.Time) []Meeting {
 	if obj.Data == nil {
 		return nil
 	}
 
+	// Collect the RECURRENCE-ID of every instance override in this resource.
+	// The recurring master must not also expand those instances, or they'd be
+	// counted twice (once from the RRULE, once from the override).
+	overrides := make(map[int64]bool)
+	for _, event := range obj.Data.Events() {
+		if event.Props.Get("RECURRENCE-ID") == nil {
+			continue
+		}
+		if t := parseICalTimeProp(event.Props, "RECURRENCE-ID"); !t.IsZero() {
+			overrides[t.Unix()] = true
+		}
+	}
+
 	var meetings []Meeting
 	for _, event := range obj.Data.Events() {
-		ms := c.parseEvent(event, queryStart, queryEnd)
+		ms := c.parseEvent(event, queryStart, queryEnd, overrides)
 		meetings = append(meetings, ms...)
 	}
 	return meetings
@@ -154,7 +204,7 @@ func (c *CalDAVSource) parseCalendarObject(obj caldav.CalendarObject, queryStart
 // 1. Event with RECURRENCE-ID: it's a modified instance — use DTSTART directly
 // 2. Event with RRULE: expand occurrences within the query range
 // 3. Plain event: use DTSTART as-is
-func (c *CalDAVSource) parseEvent(event ical.Event, queryStart, queryEnd time.Time) []Meeting {
+func (c *CalDAVSource) parseEvent(event ical.Event, queryStart, queryEnd time.Time, overrides map[int64]bool) []Meeting {
 	hasRRule := event.Props.Get("RRULE") != nil
 	hasRecurrenceID := event.Props.Get("RECURRENCE-ID") != nil
 
@@ -182,7 +232,7 @@ func (c *CalDAVSource) parseEvent(event ical.Event, queryStart, queryEnd time.Ti
 
 	if hasRRule {
 		// Case 2: Recurring event — expand occurrences within query range
-		return c.expandRecurring(event, base, dtstart, dur, isAllDay, queryStart, queryEnd)
+		return c.expandRecurring(event, base, dtstart, dur, isAllDay, queryStart, queryEnd, overrides)
 	}
 
 	// Case 3: One-off event
@@ -196,7 +246,7 @@ func (c *CalDAVSource) parseEvent(event ical.Event, queryStart, queryEnd time.Ti
 }
 
 // expandRecurring uses rrule-go to compute occurrences within the query range.
-func (c *CalDAVSource) expandRecurring(event ical.Event, base Meeting, dtstart time.Time, dur time.Duration, isAllDay bool, queryStart, queryEnd time.Time) []Meeting {
+func (c *CalDAVSource) expandRecurring(event ical.Event, base Meeting, dtstart time.Time, dur time.Duration, isAllDay bool, queryStart, queryEnd time.Time, overrides map[int64]bool) []Meeting {
 	rruleProp := event.Props.Get("RRULE")
 	if rruleProp == nil {
 		return nil
@@ -206,7 +256,7 @@ func (c *CalDAVSource) expandRecurring(event ical.Event, base Meeting, dtstart t
 	opt, err := rrule.StrToROption(fmt.Sprintf("RRULE:%s", rruleProp.Value))
 	if err != nil {
 		// Can't parse — fall back
-		if !dtstart.Before(queryStart) && dtstart.Before(queryEnd) {
+		if !overrides[dtstart.Unix()] && !dtstart.Before(queryStart) && dtstart.Before(queryEnd) {
 			base.Start = formatTime(dtstart, isAllDay)
 			base.End = formatTime(dtstart.Add(dur), isAllDay)
 			return []Meeting{base}
@@ -218,7 +268,7 @@ func (c *CalDAVSource) expandRecurring(event ical.Event, base Meeting, dtstart t
 	opt.Dtstart = dtstart
 	rule, err := rrule.NewRRule(*opt)
 	if err != nil {
-		if !dtstart.Before(queryStart) && dtstart.Before(queryEnd) {
+		if !overrides[dtstart.Unix()] && !dtstart.Before(queryStart) && dtstart.Before(queryEnd) {
 			base.Start = formatTime(dtstart, isAllDay)
 			base.End = formatTime(dtstart.Add(dur), isAllDay)
 			return []Meeting{base}
@@ -232,6 +282,11 @@ func (c *CalDAVSource) expandRecurring(event ical.Event, base Meeting, dtstart t
 
 	var meetings []Meeting
 	for _, occ := range occurrences {
+		// Skip instances that have an explicit override; those are emitted
+		// separately when their RECURRENCE-ID event is parsed.
+		if overrides[occ.Unix()] {
+			continue
+		}
 		m := base // copy
 		m.Start = formatTime(occ, isAllDay)
 		m.End = formatTime(occ.Add(dur), isAllDay)
@@ -291,7 +346,7 @@ func (c *CalDAVSource) buildMeetingBase(event ical.Event) Meeting {
 	}
 
 	return Meeting{
-		Source:         c.name,
+		Source:         c.sourceLabel(),
 		Summary:        summary,
 		Description:    description,
 		Location:       location,

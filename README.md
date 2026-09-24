@@ -71,6 +71,53 @@ cp config.example.json ~/.config/qcal/config.json
 }
 ```
 
+### Secrets via a password command
+
+Instead of writing the password (or Google refresh token) into the config, set
+`passcmd` to a shell command whose stdout is the secret. It is only consulted
+when the literal `password` / `refresh_token` field is empty.
+
+macOS Keychain example — store the Fastmail app password once (it prompts, so
+the secret never lands in your shell history or config):
+
+```bash
+security add-generic-password -a "you@fastmail.com" -s "qcal-fastmail" -U -w
+```
+
+```json
+{
+  "name": "personal",
+  "type": "caldav",
+  "url": "https://caldav.fastmail.com/",
+  "username": "you@fastmail.com",
+  "passcmd": "security find-generic-password -a you@fastmail.com -s qcal-fastmail -w"
+}
+```
+
+`passcmd` works with any password manager (`pass`, `op`, `secret-tool`, ...).
+
+### Per-calendar colors
+
+Each CalDAV calendar is labelled in the output by its display name (e.g.
+`Work`, `Personal`) and given a distinct color automatically. To pin specific
+colors, add a `calendars` map to the source:
+
+```json
+{
+  "name": "fastmail",
+  "type": "caldav",
+  "url": "https://caldav.fastmail.com/",
+  "username": "you@fastmail.com",
+  "passcmd": "security find-generic-password -a you@fastmail.com -s qcal-fastmail -w",
+  "calendars": {
+    "Work": "63",
+    "Personal": "170"
+  }
+}
+```
+
+Calendars not listed fall back to the palette.
+
 ### Multiple sources
 
 ```json
@@ -171,3 +218,5 @@ Split-pane interface:
 | `url`            | string   | caldav   | CalDAV server URL                                |
 | `username`       | string   | caldav   | CalDAV username                                  |
 | `password`       | string   | caldav   | CalDAV password (app password recommended)       |
+| `passcmd`        | string   | no       | Shell command whose stdout is used as the secret |
+| `calendars`      | object   | no       | CalDAV calendar name → color override            |

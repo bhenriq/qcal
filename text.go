@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -114,7 +115,7 @@ func printText(meetings []Meeting, colors SourceColorMap) {
 			// Source tag (only show when multiple sources)
 			sourceTag := ""
 			if multiSource && m.Source != "" {
-				sourceTag = fmt.Sprintf("  %s[%s]%s", ansiDim, m.Source, ansiReset)
+				sourceTag = fmt.Sprintf("  %s[%s]%s", ansiColor(colors[m.Source]), m.Source, ansiReset)
 			}
 
 			// Summary line
@@ -139,4 +140,19 @@ func printText(meetings []Meeting, colors SourceColorMap) {
 
 	// Legend
 	fmt.Printf("\n%s%s  ✓ past  ▶ now  ○ upcoming  ◆ all day%s\n\n", ansiDim, ansiWhite, ansiReset)
+}
+
+// ansiColor converts a lipgloss color value (ANSI 256 number or #rrggbb hex)
+// into an ANSI foreground escape sequence for use in text output.
+func ansiColor(color string) string {
+	if strings.HasPrefix(color, "#") && len(color) == 7 {
+		var r, g, b int
+		if _, err := fmt.Sscanf(color, "#%02x%02x%02x", &r, &g, &b); err == nil {
+			return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+		}
+	}
+	if n, err := strconv.Atoi(color); err == nil && n >= 0 && n <= 255 {
+		return fmt.Sprintf("\033[38;5;%dm", n)
+	}
+	return ansiDim
 }

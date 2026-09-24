@@ -67,15 +67,51 @@ type SourceColorMap map[string]string
 func BuildSourceColors(sources []SourceConfig) SourceColorMap {
 	m := make(SourceColorMap)
 	paletteIdx := 0
+
+	assign := func(name, override string) {
+		if name == "" {
+			return
+		}
+		if override != "" {
+			m[name] = override
+			return
+		}
+		if _, exists := m[name]; exists {
+			return
+		}
+		m[name] = sourceColorPalette[paletteIdx%len(sourceColorPalette)]
+		paletteIdx++
+	}
+
 	for _, s := range sources {
-		if s.Color != "" {
-			m[s.Name] = s.Color
-		} else {
-			m[s.Name] = sourceColorPalette[paletteIdx%len(sourceColorPalette)]
-			paletteIdx++
+		assign(s.Name, s.Color)
+
+		// Per-calendar overrides (CalDAV). Sort keys so auto-assigned
+		// fallback colors are deterministic.
+		calNames := make([]string, 0, len(s.Calendars))
+		for name := range s.Calendars {
+			calNames = append(calNames, name)
+		}
+		sort.Strings(calNames)
+		for _, name := range calNames {
+			assign(name, s.Calendars[name])
 		}
 	}
 	return m
+}
+
+// ensureMeetingColors assigns palette colors to any meeting source not already
+// in the map — e.g. CalDAV calendars discovered at runtime.
+func ensureMeetingColors(meetings []Meeting, colors SourceColorMap) {
+	for _, m := range meetings {
+		if m.Source == "" {
+			continue
+		}
+		if _, exists := colors[m.Source]; exists {
+			continue
+		}
+		colors[m.Source] = sourceColorPalette[len(colors)%len(sourceColorPalette)]
+	}
 }
 
 // buildSources creates CalendarSource instances from config.
@@ -125,6 +161,15 @@ func fetchAllSources(sources []CalendarSource, days int) ([]Meeting, []error, er
 			continue
 		}
 		all = append(all, r.meetings...)
+	}
+
+	// Normalize timed events to the local timezone so date grouping and times
+	// are consistent even when sources report different UTC offsets (e.g. a
+	// 09:00-04:00 event displayed next to 06:00-07:00 events). Date-only
+	// (all-day) values are left untouched.
+	for i := range all {
+		all[i].Start = normalizeToLocal(all[i].Start)
+		all[i].End = normalizeToLocal(all[i].End)
 	}
 
 	// Build the set of valid dates: today, today+1, ..., today+days-1
@@ -242,4 +287,14 @@ func parseStartTime(s string) time.Time {
 		return t
 	}
 	return time.Time{}
+}
+
+// normalizeToLocal rewrites an RFC3339 timestamp into the machine's local
+// timezone, so downstream date grouping and time display stay consistent.
+// Date-only (all-day) values are returned unchanged.
+func normalizeToLocal(s string) string {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Local().Format(time.RFC3339)
+	}
+	return s
 }
